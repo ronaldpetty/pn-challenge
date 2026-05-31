@@ -88,4 +88,4 @@ The build went through eight iterations, each closing one paper concept at a tim
 
 ## AI Tools
 
-Claude Code (Anthropic) was used throughout — for code generation, architecture decisions, and iterative review. Each level was reviewed against the paper, gaps were identified, and the next level was built to close one gap. The reviews drove the feature roadmap rather than up-front planning. This README was also written with Claude Code.
+Codex (and some Claude Code (Anthropic)) was used throughout — for code generation, architecture decisions, and iterative review. Each level was reviewed against the paper, gaps were identified, and the next level was built to close one gap. The reviews drove the feature roadmap rather than up-front planning. This README was also written with Claude Code.
