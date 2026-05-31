@@ -72,3 +72,19 @@ Read:
 
 - `level4/README.md`
 - `level4/LEVEL4_RUNBOOK.md`
+
+## Level 5
+
+Level 5 lives in `level5/` and keeps Level 4's public/private facts paths while adding explicit W3C-style VC status-list revocation. A local `revocation-authority` serves a signed status list, revokes an active Enterprise B catalog credential before TTL expiry, and the consumer rejects it until the next rotated credential recovers.
+
+Run it:
+
+```sh
+cd level5
+./scripts/test-e2e.sh
+```
+
+Read:
+
+- `level5/README.md`
+- `level5/LEVEL5_RUNBOOK.md`
