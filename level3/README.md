@@ -1,6 +1,6 @@
 # NANDA Level 3 Credential Freshness Demo
 
-This demo leaves `level1/` and `level2/` unchanged. It starts from the Level 2 enterprise registry model and adds short-lived signed JSON credentials.
+Level 3 keeps the Level 2 enterprise registry flow, but makes signed identity metadata expire and rotate while the services stay alive.
 
 The rotated credentials are:
 
@@ -9,13 +9,45 @@ The rotated credentials are:
 
 Both expire after random 5-10 second TTLs. The rotator deliberately waits an additional random 2-4 seconds after the first layer expires before writing the next version, so the always-running consumer sees successful verification, failed catalog verification, failed registry-address verification, and recovery.
 
+## Paper Mapping
+
+The closest concern in `2507.14263v1.pdf` is signed metadata freshness around `AgentAddr` and `AgentFacts`.
+
+- The paper's `AgentAddr` maps to this demo's `EnterpriseRegistryAddrCredential`.
+- The paper's `AgentFacts` maps more closely to this demo's `EnterpriseMCPCatalogCredential`.
+
+So "identity expires" here means the VC-shaped signed JSON expires. It does not mean the Docker container stops, the HTTP service identity changes, or a TLS certificate rotates.
+
+## What Runs
+
+Long-running services:
+
+- `nanda-index`
+- `credential-rotator`
+- `enterprise-a-registry`
+- `enterprise-b-registry`
+- `enterprise-a-reverse`
+- `enterprise-a-uppercase`
+- `enterprise-b-truncate`
+- `enterprise-b-count`
+- `consumer`
+- `swimlane`
+
+The `go-build` and `artifact-init` services are setup jobs and exit after they finish.
+
+Generated runtime files are ignored:
+
+- `bin/`
+- `artifacts/`
+- `logs/`
+
 ## Run A Bounded Test
 
 ```sh
 ./scripts/test-e2e.sh
 ```
 
-The test starts the stack, lets it run long enough to observe credential rotation, expiration failures, verification recovery, and tool calls, then stops Docker Compose.
+The script starts the stack, lets it run long enough to observe credential rotation, expiration failures, verification recovery, and tool calls, then stops Docker Compose.
 
 ## Run The Live Demo
 
@@ -24,45 +56,69 @@ mkdir -p bin artifacts logs
 docker compose up --build
 ```
 
-This keeps the services alive until you stop Docker Compose.
-
-Stop it:
+This keeps the services alive until you stop Docker Compose:
 
 ```sh
 docker compose down --remove-orphans
 ```
 
-## Services
+## Rotation Behavior
 
-- `nanda-index`: serves current signed registry address credentials.
-- `credential-rotator`: rewrites signed JSON credentials with random short TTLs.
-- `enterprise-a-registry`: serves Enterprise A's current signed MCP catalog.
-- `enterprise-b-registry`: serves Enterprise B's current signed MCP catalog.
-- `enterprise-a-reverse`: MCP server with `reverse`.
-- `enterprise-a-uppercase`: MCP server with `uppercase`.
-- `enterprise-b-truncate`: MCP server with `truncate`.
-- `enterprise-b-count`: MCP server with `count`.
-- `consumer`: loops forever, verifies credentials, calls tools only after verification, and logs failures.
-- `swimlane`: loops forever and prints new audit events, highlighting rotations and failed verification with `!!!`.
+The rotator writes fresh credentials with random TTLs between 5 and 10 seconds. It staggers the two layers so one generation shows catalog expiration first and the next generation shows registry-address expiration first. After the first layer expires, the rotator intentionally waits another random 2 to 4 seconds before writing the next credential version.
 
-## Manual Inspection
+That deliberate expired gap makes failed verification visible:
+
+```text
+fresh credential -> verification succeeds
+catalog or registry-address credential expires -> verification fails
+rotator writes next version -> verification recovers
+```
+
+## Consumer Behavior
+
+The consumer loops every 2 seconds:
+
+1. Searches NANDA for enterprise MCP registry registrations.
+2. Resolves each registry address credential.
+3. Verifies the registry address signature and expiration.
+4. Fetches each enterprise catalog.
+5. Verifies the catalog signature and expiration.
+6. Compares each MCP server's live tool list to the verified catalog.
+7. Calls tools only when verification succeeded.
+8. Skips tool calls when verification fails.
+
+Verification failures are logged on every failed attempt. Recovery is logged when a previously failing credential verifies again.
+
+## Logs To Look For
+
+Important events:
+
+- `credential_rotated_registry_addr`
+- `credential_rotated_catalog`
+- `verification_failed_registry_addr`
+- `verification_failed_enterprise_catalog`
+- `verification_recovered_registry_addr`
+- `verification_recovered_enterprise_catalog`
+- `tool_result`
+
+The `swimlane` service continuously prints new events and marks credential rotations and failed verifications with `!!!`.
+
+## Manual Curl Checks
+
+With the stack running:
 
 ```sh
-# Lists enterprise registry names known to NANDA.
+# Lists enterprise registries known to NANDA.
 curl http://localhost:18080/registries
 
-# Searches NANDA for enterprise MCP registry registrations.
+# Searches for enterprise MCP registry registrations.
 curl 'http://localhost:18080/search?registrationType=enterprise-mcp-registry'
 
-# Returns the current signed address for Enterprise A's registry proxy.
+# Returns the current signed registry address credential.
 curl http://localhost:18080/resolve/enterprise-a.registry.nanda.local
 
-# Returns Enterprise A's current signed MCP server catalog.
+# Returns the current signed enterprise catalog credential.
 curl http://localhost:18081/catalog
 ```
 
-Generated runtime files are ignored:
-
-- `bin/`
-- `artifacts/`
-- `logs/`
+If you repeat the last two curl commands over time, the `expirationDate` and `credentialVersion` fields change as the rotator writes new signed JSON.

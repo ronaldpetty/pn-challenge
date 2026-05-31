@@ -16,7 +16,6 @@ cd level1
 Read:
 
 - `level1/README.md`
-- `level1/LEVEL1_RUNBOOK.md`
 
 ## Level 2
 
@@ -32,7 +31,6 @@ cd level2
 Read:
 
 - `level2/README.md`
-- `level2/LEVEL2_RUNBOOK.md`
 
 ## Level 3
 
@@ -55,7 +53,6 @@ docker compose up --build
 Read:
 
 - `level3/README.md`
-- `level3/LEVEL3_RUNBOOK.md`
 
 ## Level 4
 
@@ -71,7 +68,6 @@ cd level4
 Read:
 
 - `level4/README.md`
-- `level4/LEVEL4_RUNBOOK.md`
 
 ## Level 5
 
@@ -87,7 +83,6 @@ cd level5
 Read:
 
 - `level5/README.md`
-- `level5/LEVEL5_RUNBOOK.md`
 
 ## Level 6
 
@@ -103,7 +98,6 @@ cd level6
 Read:
 
 - `level6/README.md`
-- `level6/LEVEL6_RUNBOOK.md`
 
 ## Level 7
 
@@ -119,7 +113,6 @@ cd level7
 Read:
 
 - `level7/README.md`
-- `level7/LEVEL7_RUNBOOK.md`
 
 ## Level 8
 
@@ -135,7 +128,6 @@ cd level8
 Read:
 
 - `level8/README.md`
-- `level8/LEVEL8_RUNBOOK.md`
 - `level8/LEVEL8_WALKTHROUGH.md`
 - `level8/CURL_CLIENT_GUIDE.md`
 - `level8/features.md`

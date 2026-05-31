@@ -1,8 +1,43 @@
 # NANDA Level 2 Enterprise Registry Demo
 
-This Level 2 demo shows a second registration type: **enterprise-routed registration**.
+Level 2 demonstrates a second registration type: **enterprise-routed MCP registry registration**.
 
-Instead of registering every MCP server directly in NANDA, the NANDA index registers two enterprise MCP registry proxies. A consumer searches NANDA for those registries, verifies the signed registry addresses, asks each registry for its signed MCP catalog, verifies the catalog, compares each MCP server's live tool list to the signed catalog, executes those skills, and proves a skill mismatch is rejected.
+Level 1 directly registers agents in the NANDA index. Level 2 registers enterprise MCP registry proxies in the NANDA index. Each enterprise registry is intentionally fake and small: it is a simple catalog for that enterprise's MCP servers.
+
+The visible flow is:
+
+```text
+consumer -> NANDA index -> enterprise registry -> MCP server
+```
+
+## What Runs
+
+The demo creates a shared index plus three demo groups:
+
+- `nanda-index`: the shared NANDA index.
+- `enterprise-a`: one registry and two MCP servers.
+- `enterprise-b`: one registry and two MCP servers.
+- `consumer`: a client agent that uses both enterprises.
+
+Enterprise A MCP servers:
+
+- `enterprise-a-reverse`: supports `reverse`.
+- `enterprise-a-uppercase`: supports `uppercase`.
+
+Enterprise B MCP servers:
+
+- `enterprise-b-truncate`: supports `truncate`.
+- `enterprise-b-count`: supports `count`.
+
+Other services:
+
+- `swimlane`: reads shared logs and prints the interaction diagram.
+
+Generated runtime files are ignored:
+
+- `bin/`
+- `artifacts/`
+- `logs/`
 
 ## Run
 
@@ -10,25 +45,50 @@ Instead of registering every MCP server directly in NANDA, the NANDA index regis
 ./scripts/test-e2e.sh
 ```
 
-The script builds the Go binary inside an Ubuntu-based Docker container, starts the full Docker Compose stack, runs the consumer task, then prints a text swimlane from shared audit logs.
+The script:
 
-## Services
+1. Builds the Go binary inside an Ubuntu container.
+2. Generates Level 2 signed JSON artifacts.
+3. Starts the NANDA index.
+4. Starts both enterprise registries.
+5. Starts four fake MCP servers.
+6. Runs the consumer, which searches NANDA for enterprise MCP registries.
+7. Runs the swimlane printer against shared audit logs.
 
-- `nanda-index`: signed registry address lookup.
-- `enterprise-a-registry`: fake enterprise A MCP registry.
-- `enterprise-b-registry`: fake enterprise B MCP registry.
-- `enterprise-a-reverse`: MCP server with `reverse`.
-- `enterprise-a-uppercase`: MCP server with `uppercase`.
-- `enterprise-b-truncate`: MCP server with `truncate`.
-- `enterprise-b-count`: MCP server with `count`.
-- `consumer`: searches NANDA for registries and executes tools.
-- `swimlane`: reads shared logs and prints the interaction diagram.
+## Verification
 
-Generated runtime files are written to ignored directories:
+NANDA signs `EnterpriseRegistryAddr` records. These tell the consumer which enterprise registry proxies exist and where their signed catalogs are.
 
-- `bin/`
-- `artifacts/`
-- `logs/`
+Each enterprise registry serves a signed `EnterpriseMCPCatalog`. This tells the consumer which MCP servers exist, where they are, and which skills each one claims to support.
+
+The consumer verifies both layers:
+
+1. Verify the registry address from NANDA.
+2. Use the verified `catalogURL`.
+3. Fetch the enterprise catalog.
+4. Verify the enterprise catalog.
+5. Ask each MCP server for its live tool list.
+6. Compare the live tool list to the verified catalog.
+7. Use only the skills listed in the verified catalog.
+8. Call the MCP server.
+
+This demonstrates that NANDA helps the consumer find enterprise registry proxies, while each enterprise registry is responsible for cataloging its MCP servers.
+
+## Skill Mismatch Check
+
+After successful tool calls, the consumer intentionally asks one MCP server to run a skill that was not listed in the verified catalog for that server. The server rejects the call with a skill mismatch error, and the consumer logs that rejection.
+
+This proves the client is not treating arbitrary tool calls as valid just because a server exists. It checks the verified catalog first.
+
+## Audit Logs And Swimlane
+
+Every major component writes JSONL audit events to the shared `logs/` directory:
+
+```json
+{"time":"...","actor":"consumer","peer":"nanda-index","action":"search_registries_result","result":"enterprise-a,enterprise-b"}
+```
+
+The `swimlane` container reads those files, sorts events by timestamp, and prints a text timeline to stdout. The output is intentionally simple; it makes the agent discovery and call chain visible in Docker logs.
 
 ## Manual Inspection
 
@@ -39,19 +99,19 @@ mkdir -p bin artifacts logs
 docker compose up --build nanda-index enterprise-a-registry enterprise-b-registry enterprise-a-reverse enterprise-a-uppercase enterprise-b-truncate enterprise-b-count
 ```
 
-In another terminal:
+Inspect NANDA and registry responses:
 
 ```sh
-# Lists enterprise registry names known to NANDA.
+# Lists enterprise registries known to NANDA.
 curl http://localhost:18080/registries
 
 # Searches NANDA for enterprise MCP registry registrations.
 curl 'http://localhost:18080/search?registrationType=enterprise-mcp-registry'
 
-# Returns the signed address for Enterprise A's registry proxy.
+# Returns the signed address for Enterprise A's MCP registry.
 curl http://localhost:18080/resolve/enterprise-a.registry.nanda.local
 
-# Returns Enterprise A's signed MCP server catalog.
+# Returns Enterprise A's signed MCP catalog.
 curl http://localhost:18081/catalog
 ```
 
