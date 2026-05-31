@@ -33,3 +33,26 @@ Read:
 
 - `level2/README.md`
 - `level2/LEVEL2_RUNBOOK.md`
+
+## Level 3
+
+Level 3 lives in `level3/` and keeps the Level 2 enterprise registry shape, but adds short-lived signed JSON credentials. Registry address credentials and enterprise catalog credentials expire after a random 5-10 seconds, rotate after a deliberate expired gap, and the consumer plus swimlane keep running until Docker Compose is stopped.
+
+Run the bounded verification script:
+
+```sh
+cd level3
+./scripts/test-e2e.sh
+```
+
+Run the live demo:
+
+```sh
+cd level3
+docker compose up --build
+```
+
+Read:
+
+- `level3/README.md`
+- `level3/LEVEL3_RUNBOOK.md`
