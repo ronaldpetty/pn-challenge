@@ -1,0 +1,236 @@
+x-demo-image: &demo-image
+  image: pn-challenge-level4-local
+  build: .
+
+services:
+  go-build:
+    <<: *demo-image
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mkdir -p /shared-bin /tmp/gocache /tmp/gomodcache &&
+        GOCACHE=/tmp/gocache
+        GOMODCACHE=/tmp/gomodcache
+        CGO_ENABLED=0
+        go build -o /shared-bin/level4-demo ./cmd/level4-demo &&
+        chmod +x /shared-bin/level4-demo
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+      - ./bin:/shared-bin
+
+  artifact-init:
+    <<: *demo-image
+    command: ["artifacts", "--artifacts", "/artifacts"]
+    depends_on:
+      go-build:
+        condition: service_completed_successfully
+    volumes:
+      - ./artifacts:/artifacts
+      - ./bin:/shared-bin:ro
+
+  nanda-index:
+    <<: *demo-image
+    command: ["index", "--artifacts", "/artifacts", "--logs", "/logs", "--addr", ":8080"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - nanda_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  credential-rotator:
+    <<: *demo-image
+    command: ["rotator", "--artifacts", "/artifacts", "--logs", "/logs"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./artifacts:/artifacts
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+
+  private-facts-gateway:
+    <<: *demo-image
+    command: ["private-facts", "--artifacts", "/artifacts", "--logs", "/logs", "--addr", ":8080"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "18083:8080"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - privacy_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  enterprise-a-registry:
+    <<: *demo-image
+    command: ["registry", "--artifacts", "/artifacts", "--logs", "/logs", "--enterprise", "enterprise-a", "--addr", ":8080"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "18081:8080"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - nanda_net
+      - enterprise_a_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  enterprise-b-registry:
+    <<: *demo-image
+    command: ["registry", "--artifacts", "/artifacts", "--logs", "/logs", "--enterprise", "enterprise-b", "--addr", ":8080"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "18082:8080"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  enterprise-a-reverse:
+    <<: *demo-image
+    command: ["mcp", "--logs", "/logs", "--agent", "enterprise-a-reverse", "--tool", "reverse", "--addr", ":8080"]
+    depends_on:
+      go-build:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - enterprise_a_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  enterprise-a-uppercase:
+    <<: *demo-image
+    command: ["mcp", "--logs", "/logs", "--agent", "enterprise-a-uppercase", "--tool", "uppercase", "--addr", ":8080"]
+    depends_on:
+      go-build:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - enterprise_a_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  enterprise-b-truncate:
+    <<: *demo-image
+    command: ["mcp", "--logs", "/logs", "--agent", "enterprise-b-truncate", "--tool", "truncate", "--addr", ":8080"]
+    depends_on:
+      go-build:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - enterprise_b_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  enterprise-b-count:
+    <<: *demo-image
+    command: ["mcp", "--logs", "/logs", "--agent", "enterprise-b-count", "--tool", "count", "--addr", ":8080"]
+    depends_on:
+      go-build:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - enterprise_b_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/level4-demo", "health", "--url", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  consumer:
+    <<: *demo-image
+    command: ["consumer", "--artifacts", "/artifacts", "--logs", "/logs", "--index", "http://nanda-index:8080"]
+    depends_on:
+      nanda-index:
+        condition: service_healthy
+      enterprise-a-registry:
+        condition: service_healthy
+      enterprise-b-registry:
+        condition: service_healthy
+      private-facts-gateway:
+        condition: service_healthy
+      enterprise-a-reverse:
+        condition: service_healthy
+      enterprise-a-uppercase:
+        condition: service_healthy
+      enterprise-b-truncate:
+        condition: service_healthy
+      enterprise-b-count:
+        condition: service_healthy
+      credential-rotator:
+        condition: service_started
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./logs:/logs
+      - ./bin:/shared-bin:ro
+    networks:
+      - nanda_net
+      - privacy_net
+      - enterprise_a_net
+      - enterprise_b_net
+
+  swimlane:
+    <<: *demo-image
+    command: ["swimlane", "--logs", "/logs"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/logs:ro
+      - ./bin:/shared-bin:ro
+
+networks:
+  nanda_net:
+  privacy_net:
+  enterprise_a_net:
+  enterprise_b_net:

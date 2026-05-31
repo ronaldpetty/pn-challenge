@@ -56,3 +56,19 @@ Read:
 
 - `level3/README.md`
 - `level3/LEVEL3_RUNBOOK.md`
+
+## Level 4
+
+Level 4 lives in `level4/` and adds a local `PrivateFactsURL` demo. Enterprise A uses the original public direct catalog path, while Enterprise B uses a neutral `private-facts-gateway`; the consumer exercises both paths in the same run while still verifying signed, rotating credentials.
+
+Run it:
+
+```sh
+cd level4
+./scripts/test-e2e.sh
+```
+
+Read:
+
+- `level4/README.md`
+- `level4/LEVEL4_RUNBOOK.md`
