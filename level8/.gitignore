@@ -1,0 +1,5 @@
+artifacts/
+bin/
+logs/
+.gocache/
+.gomodcache/
