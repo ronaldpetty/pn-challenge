@@ -9,9 +9,11 @@ rm -rf artifacts logs
 mkdir -p bin artifacts logs
 
 cleanup() {
+  docker rm -f level8-e2e-existing-agent level8-e2e-lab-agent level8-e2e-lab-registry >/dev/null 2>&1 || true
   docker compose down --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+cleanup
 
 docker compose up --build -d \
   nanda-index-a \
@@ -74,5 +76,126 @@ if [ -f logs/enterprise-b-registry.jsonl ] && grep "serve_signed_catalog" logs/e
   echo "enterprise-b direct catalog was used; expected PrivateFactsURL only" >&2
   exit 1
 fi
+
+echo "ok: base quilt, federation, VC verification, revocation, CRDT, key rotation, and privacy checks passed"
+echo "proving runtime agent registration with an existing enterprise registry"
+
+docker compose run -d --no-deps \
+  --name level8-e2e-existing-agent \
+  -p 19190:8080 \
+  --entrypoint /shared-bin/mcp-agent \
+  enterprise-a-reverse \
+  --logs /logs \
+  --agent e2e-existing-agent \
+  --tool echo \
+  --addr :8080 >/dev/null
+
+sleep 2
+curl -fsS --resolve host.docker.internal:19190:127.0.0.1 \
+  http://host.docker.internal:19190/healthz >/dev/null
+
+curl -fsS --resolve enterprise-a.registry.nanda.local:18081:127.0.0.1 \
+  -X POST http://enterprise-a.registry.nanda.local:18081/agents/register \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "e2e-existing-agent",
+    "name": "e2e.existing.agent.mcp.local",
+    "endpoint": "http://host.docker.internal:19190",
+    "tools": ["echo"]
+  }' >/tmp/level8-e2e-existing-register.json
+
+sleep 3
+curl -fsS --resolve nanda-a.local:18080:127.0.0.1 \
+  'http://nanda-a.local:18080/search?tool=echo' >/tmp/level8-e2e-existing-search.json
+grep "enterprise-a.registry.nanda.local" /tmp/level8-e2e-existing-search.json >/dev/null
+grep "e2e-existing-agent" /tmp/level8-e2e-existing-search.json >/dev/null
+
+curl -fsS --resolve enterprise-a.registry.nanda.local:18081:127.0.0.1 \
+  http://enterprise-a.registry.nanda.local:18081/catalog >/tmp/level8-e2e-existing-catalog.json
+grep "EnterpriseMCPCatalogCredential" /tmp/level8-e2e-existing-catalog.json >/dev/null
+grep "e2e-existing-agent" /tmp/level8-e2e-existing-catalog.json >/dev/null
+
+curl -fsS --resolve host.docker.internal:19190:127.0.0.1 \
+  -X POST http://host.docker.internal:19190/mcp/tools/call \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"echo","input":"existing registry dynamic agent"}' >/tmp/level8-e2e-existing-call.json
+grep "existing registry dynamic agent" /tmp/level8-e2e-existing-call.json >/dev/null
+
+grep -R "agent_registered.*e2e-existing-agent" logs/enterprise-a-registry.jsonl >/dev/null
+grep -R "agent_registration_join_refreshed.*e2e-existing-agent" logs/enterprise-a-registry.jsonl >/dev/null
+
+echo "ok: Enterprise A dynamically registered agent was found through NANDA and called"
+echo "proving a dynamic registry can join NANDA, register an agent, and serve signed facts"
+
+docker compose run -d --no-deps \
+  --name level8-e2e-lab-agent \
+  -p 19191:8080 \
+  --entrypoint /shared-bin/mcp-agent \
+  enterprise-a-reverse \
+  --logs /logs \
+  --agent e2e-lab-agent \
+  --tool title \
+  --addr :8080 >/dev/null
+
+docker compose run -d --no-deps \
+  --name level8-e2e-lab-registry \
+  -p 18111:8080 \
+  --entrypoint /shared-bin/enterprise-registry \
+  enterprise-a-registry \
+  --artifacts /artifacts \
+  --logs /logs \
+  --enterprise e2e-lab \
+  --registry-name e2e-lab.registry.nanda.local \
+  --registry-id e2e-lab-registry \
+  --catalog-url http://host.docker.internal:18111/catalog \
+  --facts-mode public \
+  --description "Runtime e2e lab registry for ad-hoc agent registration." \
+  --join-index http://nanda-index-a:8080 \
+  --addr :8080 >/dev/null
+
+sleep 4
+curl -fsS --resolve host.docker.internal:19191:127.0.0.1 \
+  http://host.docker.internal:19191/healthz >/dev/null
+curl -fsS --resolve e2e-lab.registry.nanda.local:18111:127.0.0.1 \
+  http://e2e-lab.registry.nanda.local:18111/healthz >/dev/null
+
+curl -fsS --resolve e2e-lab.registry.nanda.local:18111:127.0.0.1 \
+  -X POST http://e2e-lab.registry.nanda.local:18111/agents/register \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "e2e-lab-agent",
+    "name": "e2e.lab.agent.mcp.local",
+    "endpoint": "http://host.docker.internal:19191",
+    "tools": ["title"]
+  }' >/tmp/level8-e2e-lab-register.json
+
+sleep 3
+curl -fsS --resolve nanda-a.local:18080:127.0.0.1 \
+  'http://nanda-a.local:18080/search?tool=title' >/tmp/level8-e2e-lab-search.json
+grep "e2e-lab.registry.nanda.local" /tmp/level8-e2e-lab-search.json >/dev/null
+grep "e2e-lab-agent" /tmp/level8-e2e-lab-search.json >/dev/null
+
+curl -fsS --resolve nanda-a.local:18080:127.0.0.1 \
+  http://nanda-a.local:18080/resolve/e2e-lab.registry.nanda.local >/tmp/level8-e2e-lab-addr.json
+grep "EnterpriseRegistryAddrCredential" /tmp/level8-e2e-lab-addr.json >/dev/null
+
+curl -fsS --resolve e2e-lab.registry.nanda.local:18111:127.0.0.1 \
+  http://e2e-lab.registry.nanda.local:18111/catalog >/tmp/level8-e2e-lab-catalog.json
+grep "EnterpriseMCPCatalogCredential" /tmp/level8-e2e-lab-catalog.json >/dev/null
+grep "e2e-lab-agent" /tmp/level8-e2e-lab-catalog.json >/dev/null
+
+curl -fsS --resolve host.docker.internal:19191:127.0.0.1 \
+  -X POST http://host.docker.internal:19191/mcp/tools/call \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"title","input":"dynamic registry e2e"}' >/tmp/level8-e2e-lab-call.json
+grep "dynamic registry e2e" /tmp/level8-e2e-lab-call.json >/dev/null
+
+grep -R "managed_registry_credentials_rotated" logs/e2e-lab-registry.jsonl >/dev/null
+grep -R "agent_registered.*e2e-lab-agent" logs/e2e-lab-registry.jsonl >/dev/null
+grep -R "agent_registration_join_refreshed.*e2e-lab-agent" logs/e2e-lab-registry.jsonl >/dev/null
+grep -R "registry_joined_quilt.*e2e-lab.registry.nanda.local" logs/nanda-a.jsonl >/dev/null
+grep -R "registry_refreshed_quilt.*e2e-lab.registry.nanda.local" logs/nanda-a.jsonl >/dev/null
+
+echo "ok: dynamic registry was discovered through NANDA and its registered tool was called"
 
 docker compose logs --tail=80 swimlane

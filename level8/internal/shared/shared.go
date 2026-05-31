@@ -43,6 +43,10 @@ const (
 	maxExpiredGap    = 4 * time.Second
 	consumerInterval = 2 * time.Second
 	swimlaneInterval = 1 * time.Second
+
+	dynamicRegistryAddrTTL        = 45 * time.Second
+	dynamicRegistryCatalogTTL     = 45 * time.Second
+	dynamicRegistryRotateInterval = 15 * time.Second
 )
 
 type TrustBundle struct {
@@ -96,12 +100,21 @@ type RegistryRecord struct {
 	Name       string         `json:"name"`
 	Aliases    []string       `json:"aliases"`
 	Credential map[string]any `json:"credential"`
+	Agents     []AgentSpec    `json:"agents,omitempty"`
 }
 
 type DiscoveredRegistry struct {
 	Name     string
 	IndexID  string
 	IndexURL string
+}
+
+type AgentMatch struct {
+	Registry string   `json:"registry"`
+	AgentID  string   `json:"agentID"`
+	Name     string   `json:"name"`
+	Endpoint string   `json:"endpoint"`
+	Tools    []string `json:"tools"`
 }
 
 type EnterpriseSpec struct {
@@ -121,6 +134,21 @@ type AgentSpec struct {
 	Name     string   `json:"name"`
 	Endpoint string   `json:"endpoint"`
 	Tools    []string `json:"tools"`
+}
+
+type RegistryOptions struct {
+	ArtifactsDir    string
+	LogsDir         string
+	Enterprise      string
+	JoinIndexURL    string
+	Addr            string
+	RegistryName    string
+	RegistryID      string
+	CatalogURL      string
+	PrivateFactsURL string
+	CRDTUpdateURL   string
+	FactsMode       string
+	Description     string
 }
 
 type Event struct {
@@ -242,15 +270,24 @@ func RunIndex(artifactsDir, logsDir, indexID, addr string) error {
 				"indexID":          index.ID,
 				"registrationType": registrationType,
 				"registries":       []string{},
+				"agentMatches":     []AgentMatch{},
 				"federatedIndexes": index.Peers,
 			}, http.StatusOK
 		}
-		names = registryNames(merged)
-		audit.Log("consumer", "search_registries", strings.Join(names, ","))
+		toolFilter := strings.TrimSpace(r.URL.Query().Get("tool"))
+		agentFilter := strings.TrimSpace(r.URL.Query().Get("agent"))
+		matches := agentMatches(merged, toolFilter, agentFilter)
+		if toolFilter != "" || agentFilter != "" {
+			names = registryNamesForMatches(matches)
+		} else {
+			names = registryNames(merged)
+		}
+		audit.Log("consumer", "search_registries", searchLogSummary(names, toolFilter, agentFilter))
 		return map[string]any{
 			"indexID":          index.ID,
 			"registrationType": "enterprise-mcp-registry",
 			"registries":       names,
+			"agentMatches":     matches,
 			"federatedIndexes": index.Peers,
 		}, http.StatusOK
 	}))
@@ -302,10 +339,44 @@ func RunIndex(artifactsDir, logsDir, indexID, addr string) error {
 }
 
 func RunRegistry(artifactsDir, logsDir, enterprise, joinIndexURL, addr string) error {
+	return RunRegistryWithOptions(RegistryOptions{
+		ArtifactsDir: artifactsDir,
+		LogsDir:      logsDir,
+		Enterprise:   enterprise,
+		JoinIndexURL: joinIndexURL,
+		Addr:         addr,
+	})
+}
+
+func RunRegistryWithOptions(options RegistryOptions) error {
+	artifactsDir := options.ArtifactsDir
+	logsDir := options.LogsDir
+	enterprise := strings.TrimSpace(options.Enterprise)
+	joinIndexURL := strings.TrimSpace(options.JoinIndexURL)
+	addr := strings.TrimSpace(options.Addr)
+	if artifactsDir == "" {
+		artifactsDir = "/artifacts"
+	}
+	if logsDir == "" {
+		logsDir = "/logs"
+	}
+	if addr == "" {
+		addr = ":8080"
+	}
 	if enterprise == "" {
 		return errors.New("registry requires --enterprise")
 	}
 	audit := NewAuditor(logsDir, enterprise+"-registry")
+	spec, managed, err := prepareRegistrySpec(artifactsDir, options)
+	if err != nil {
+		return err
+	}
+	if managed {
+		if err := rotateManagedRegistryCredentials(artifactsDir, *spec, 0, audit); err != nil {
+			return err
+		}
+		go managedRegistryCredentialLoop(artifactsDir, *spec, audit)
+	}
 	if joinIndexURL != "" {
 		go joinIndexLoop(artifactsDir, enterprise, joinIndexURL, audit)
 	}
@@ -325,6 +396,49 @@ func RunRegistry(artifactsDir, logsDir, enterprise, joinIndexURL, addr string) e
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(catalog)
 	})
+	mux.HandleFunc("GET /agents", jsonHandler(func(_ *http.Request) (any, int) {
+		agents, err := catalogAgents(artifactsDir, enterprise)
+		if err != nil {
+			audit.Log("developer-client", "list_registered_agents_failed", err.Error())
+			return map[string]string{"error": err.Error()}, http.StatusInternalServerError
+		}
+		audit.Log("developer-client", "list_registered_agents", fmt.Sprintf("%d agents", len(agents)))
+		return map[string]any{"enterprise": enterprise, "agents": agents}, http.StatusOK
+	}))
+	mux.HandleFunc("POST /agents/register", jsonHandler(func(r *http.Request) (any, int) {
+		var agent AgentSpec
+		if err := json.NewDecoder(r.Body).Decode(&agent); err != nil {
+			audit.Log("developer-client", "agent_registration_failed", err.Error())
+			return map[string]string{"error": "invalid agent registration"}, http.StatusBadRequest
+		}
+		agent = normalizeAgentSpec(agent)
+		if err := validateAgentSpec(agent); err != nil {
+			audit.Log("developer-client", "agent_registration_failed", err.Error())
+			return map[string]string{"error": err.Error()}, http.StatusBadRequest
+		}
+		if err := registerDynamicAgent(artifactsDir, enterprise, agent); err != nil {
+			audit.Log("developer-client", "agent_registration_failed", err.Error())
+			return map[string]string{"error": err.Error()}, http.StatusInternalServerError
+		}
+		if joinIndexURL != "" {
+			go func() {
+				client := &http.Client{Timeout: 5 * time.Second}
+				if err := joinIndexOnce(client, artifactsDir, enterprise, joinIndexURL); err != nil {
+					audit.Log("nanda-index", "agent_registration_join_refresh_failed", err.Error())
+					return
+				}
+				audit.Log("nanda-index", "agent_registration_join_refreshed", agent.ID)
+			}()
+		}
+		audit.Log("developer-client", "agent_registered", agent.ID+" "+agent.Endpoint)
+		return map[string]any{
+			"ok":         true,
+			"enterprise": enterprise,
+			"agent":      agent,
+			"catalogURL": "/catalog",
+			"searchHint": "/search?tool=" + url.QueryEscape(firstTool(agent)),
+		}, http.StatusOK
+	}))
 	return listen(addr, enterprise+"-registry", mux)
 }
 
@@ -348,9 +462,9 @@ func joinIndexLoop(artifactsDir, enterprise, joinIndexURL string, audit Auditor)
 }
 
 func joinIndexOnce(client *http.Client, artifactsDir, enterprise, joinIndexURL string) error {
-	spec := enterpriseSpec(enterprise)
-	if spec == nil {
-		return fmt.Errorf("unknown enterprise %q", enterprise)
+	spec, err := registrySpec(artifactsDir, enterprise)
+	if err != nil {
+		return err
 	}
 	raw, err := os.ReadFile(filepath.Join(artifactsDir, "registries", enterprise, "addr.vc.json"))
 	if err != nil {
@@ -364,6 +478,9 @@ func joinIndexOnce(client *http.Client, artifactsDir, enterprise, joinIndexURL s
 		Name:       spec.Name,
 		Aliases:    []string{spec.Key, spec.RegistryID},
 		Credential: credential,
+	}
+	if agents, err := catalogAgents(artifactsDir, enterprise); err == nil {
+		record.Agents = agents
 	}
 	body, err := json.Marshal(record)
 	if err != nil {
@@ -1319,14 +1436,9 @@ func writeCredentialSet(dir string, generation int, registryAddrTTL, enterpriseC
 			return RotationSummary{}, err
 		}
 
-		agents := make([]any, 0, len(enterprise.Agents))
-		for _, agent := range enterprise.Agents {
-			agents = append(agents, map[string]any{
-				"id":       agent.ID,
-				"name":     agent.Name,
-				"endpoint": agent.Endpoint,
-				"tools":    agent.Tools,
-			})
+		agents, err := catalogAgents(dir, enterprise.Key)
+		if err != nil {
+			return RotationSummary{}, err
 		}
 		catalog := baseCredential("urn:nanda:enterprise-catalog:"+enterprise.Key, "EnterpriseMCPCatalogCredential", now, enterpriseCatalogExpiresAt, map[string]any{
 			"id":                "catalog:" + enterprise.Key,
@@ -1334,7 +1446,7 @@ func writeCredentialSet(dir string, generation int, registryAddrTTL, enterpriseC
 			"name":              enterprise.Name,
 			"description":       enterprise.Description,
 			"crdtUpdateURL":     enterprise.CRDTUpdateURL,
-			"agents":            agents,
+			"agents":            agentCredentialEntries(agents),
 			"credentialVersion": generation,
 			"ttlSeconds":        int(enterpriseCatalogTTL / time.Second),
 		})
@@ -1410,6 +1522,65 @@ func registryNames(index IndexFile) []string {
 	return names
 }
 
+func agentMatches(index IndexFile, toolFilter, agentFilter string) []AgentMatch {
+	toolFilter = strings.TrimSpace(toolFilter)
+	agentFilter = strings.TrimSpace(agentFilter)
+	if toolFilter == "" && agentFilter == "" {
+		return []AgentMatch{}
+	}
+	matches := []AgentMatch{}
+	for _, registry := range index.Registries {
+		for _, agent := range registry.Agents {
+			if toolFilter != "" && !contains(agent.Tools, toolFilter) {
+				continue
+			}
+			if agentFilter != "" && agent.ID != agentFilter && agent.Name != agentFilter {
+				continue
+			}
+			matches = append(matches, AgentMatch{
+				Registry: registry.Name,
+				AgentID:  agent.ID,
+				Name:     agent.Name,
+				Endpoint: agent.Endpoint,
+				Tools:    append([]string(nil), agent.Tools...),
+			})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Registry == matches[j].Registry {
+			return matches[i].AgentID < matches[j].AgentID
+		}
+		return matches[i].Registry < matches[j].Registry
+	})
+	return matches
+}
+
+func registryNamesForMatches(matches []AgentMatch) []string {
+	seen := map[string]bool{}
+	names := []string{}
+	for _, match := range matches {
+		if seen[match.Registry] {
+			continue
+		}
+		seen[match.Registry] = true
+		names = append(names, match.Registry)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func searchLogSummary(names []string, toolFilter, agentFilter string) string {
+	parts := []string{}
+	if toolFilter != "" {
+		parts = append(parts, "tool="+toolFilter)
+	}
+	if agentFilter != "" {
+		parts = append(parts, "agent="+agentFilter)
+	}
+	parts = append(parts, strings.Join(names, ","))
+	return strings.Join(parts, " ")
+}
+
 func peerSummary(peers []IndexPeer) string {
 	parts := make([]string, 0, len(peers))
 	for _, peer := range peers {
@@ -1473,6 +1644,424 @@ func isPrivateFactsEnterprise(key string) bool {
 		}
 	}
 	return false
+}
+
+func prepareRegistrySpec(artifactsDir string, options RegistryOptions) (*EnterpriseSpec, bool, error) {
+	key := strings.TrimSpace(options.Enterprise)
+	if key == "" {
+		return nil, false, errors.New("registry requires --enterprise")
+	}
+	if static := enterpriseSpec(key); static != nil {
+		if hasDynamicRegistryOptions(options) {
+			return nil, false, fmt.Errorf("static registry %q cannot be overridden with runtime registry flags; use a new --enterprise key", key)
+		}
+		return static, false, nil
+	}
+	if !hasDynamicRegistryOptions(options) {
+		spec, err := loadRegistrySpec(artifactsDir, key)
+		if err == nil {
+			return spec, true, nil
+		}
+	}
+	spec := EnterpriseSpec{
+		Key:             key,
+		Name:            strings.TrimSpace(options.RegistryName),
+		RegistryID:      strings.TrimSpace(options.RegistryID),
+		CatalogURL:      strings.TrimRight(strings.TrimSpace(options.CatalogURL), "/"),
+		PrivateFactsURL: strings.TrimRight(strings.TrimSpace(options.PrivateFactsURL), "/"),
+		CRDTUpdateURL:   strings.TrimRight(strings.TrimSpace(options.CRDTUpdateURL), "/"),
+		FactsMode:       strings.TrimSpace(options.FactsMode),
+		Description:     strings.TrimSpace(options.Description),
+	}
+	if spec.RegistryID == "" {
+		spec.RegistryID = key + "-registry"
+	}
+	if spec.FactsMode == "" {
+		spec.FactsMode = "public"
+	}
+	if spec.Description == "" {
+		spec.Description = "Runtime registered Level 8 MCP registry."
+	}
+	if err := validateRegistrySpec(spec); err != nil {
+		return nil, false, err
+	}
+	if err := writeRegistrySpec(artifactsDir, spec); err != nil {
+		return nil, false, err
+	}
+	return &spec, true, nil
+}
+
+func hasDynamicRegistryOptions(options RegistryOptions) bool {
+	return strings.TrimSpace(options.RegistryName) != "" ||
+		strings.TrimSpace(options.RegistryID) != "" ||
+		strings.TrimSpace(options.CatalogURL) != "" ||
+		strings.TrimSpace(options.PrivateFactsURL) != "" ||
+		strings.TrimSpace(options.CRDTUpdateURL) != "" ||
+		strings.TrimSpace(options.FactsMode) != "" ||
+		strings.TrimSpace(options.Description) != ""
+}
+
+func registrySpec(artifactsDir, key string) (*EnterpriseSpec, error) {
+	if spec := enterpriseSpec(key); spec != nil {
+		return spec, nil
+	}
+	spec, err := loadRegistrySpec(artifactsDir, key)
+	if err != nil {
+		return nil, err
+	}
+	return spec, nil
+}
+
+func registrySpecPath(artifactsDir, enterprise string) string {
+	return filepath.Join(artifactsDir, "registries", enterprise, "registry-spec.json")
+}
+
+func writeRegistrySpec(artifactsDir string, spec EnterpriseSpec) error {
+	if err := os.MkdirAll(filepath.Join(artifactsDir, "registries", spec.Key), 0o755); err != nil {
+		return err
+	}
+	return writeJSONAtomic(registrySpecPath(artifactsDir, spec.Key), spec)
+}
+
+func loadRegistrySpec(artifactsDir, enterprise string) (*EnterpriseSpec, error) {
+	raw, err := os.ReadFile(registrySpecPath(artifactsDir, enterprise))
+	if err != nil {
+		return nil, fmt.Errorf("unknown enterprise %q: %w", enterprise, err)
+	}
+	var spec EnterpriseSpec
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return nil, err
+	}
+	if spec.Key == "" {
+		spec.Key = enterprise
+	}
+	if err := validateRegistrySpec(spec); err != nil {
+		return nil, err
+	}
+	return &spec, nil
+}
+
+func validateRegistrySpec(spec EnterpriseSpec) error {
+	if spec.Key == "" {
+		return errors.New("registry key is required")
+	}
+	if spec.Name == "" {
+		return errors.New("registry name is required")
+	}
+	if spec.RegistryID == "" {
+		return errors.New("registry id is required")
+	}
+	if spec.CatalogURL == "" {
+		return errors.New("catalog URL is required")
+	}
+	if err := validateAbsoluteHTTPURL(spec.CatalogURL, "catalog URL"); err != nil {
+		return err
+	}
+	if spec.PrivateFactsURL != "" {
+		if err := validateAbsoluteHTTPURL(spec.PrivateFactsURL, "private facts URL"); err != nil {
+			return err
+		}
+	}
+	if spec.CRDTUpdateURL != "" {
+		if err := validateAbsoluteHTTPURL(spec.CRDTUpdateURL, "CRDT update URL"); err != nil {
+			return err
+		}
+	}
+	switch spec.FactsMode {
+	case "public", "private":
+	default:
+		return errors.New("facts mode must be public or private")
+	}
+	if spec.FactsMode == "private" && spec.PrivateFactsURL == "" {
+		return errors.New("private facts mode requires private facts URL")
+	}
+	return nil
+}
+
+func dynamicAgentsPath(artifactsDir, enterprise string) string {
+	return filepath.Join(artifactsDir, "registries", enterprise, "dynamic-agents.json")
+}
+
+func catalogAgents(artifactsDir, enterprise string) ([]AgentSpec, error) {
+	spec, err := registrySpec(artifactsDir, enterprise)
+	if err != nil {
+		return nil, err
+	}
+	agentsByID := map[string]AgentSpec{}
+	order := []string{}
+	for _, agent := range spec.Agents {
+		agent = normalizeAgentSpec(agent)
+		agentsByID[agent.ID] = agent
+		order = append(order, agent.ID)
+	}
+	dynamicAgents, err := loadDynamicAgents(artifactsDir, enterprise)
+	if err != nil {
+		return nil, err
+	}
+	for _, agent := range dynamicAgents {
+		agent = normalizeAgentSpec(agent)
+		if err := validateAgentSpec(agent); err != nil {
+			return nil, fmt.Errorf("invalid dynamic agent %q: %w", agent.ID, err)
+		}
+		if _, exists := agentsByID[agent.ID]; !exists {
+			order = append(order, agent.ID)
+		}
+		agentsByID[agent.ID] = agent
+	}
+	agents := make([]AgentSpec, 0, len(order))
+	for _, id := range order {
+		agents = append(agents, agentsByID[id])
+	}
+	return agents, nil
+}
+
+func loadDynamicAgents(artifactsDir, enterprise string) ([]AgentSpec, error) {
+	raw, err := os.ReadFile(dynamicAgentsPath(artifactsDir, enterprise))
+	if errors.Is(err, os.ErrNotExist) {
+		return []AgentSpec{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var agents []AgentSpec
+	if err := json.Unmarshal(raw, &agents); err != nil {
+		return nil, err
+	}
+	for i := range agents {
+		agents[i] = normalizeAgentSpec(agents[i])
+	}
+	sort.SliceStable(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
+	return agents, nil
+}
+
+func registerDynamicAgent(artifactsDir, enterprise string, agent AgentSpec) error {
+	if _, err := registrySpec(artifactsDir, enterprise); err != nil {
+		return err
+	}
+	agents, err := loadDynamicAgents(artifactsDir, enterprise)
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for i := range agents {
+		if agents[i].ID == agent.ID {
+			agents[i] = agent
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		agents = append(agents, agent)
+	}
+	sort.SliceStable(agents, func(i, j int) bool {
+		return agents[i].ID < agents[j].ID
+	})
+	if err := writeJSONAtomic(dynamicAgentsPath(artifactsDir, enterprise), agents); err != nil {
+		return err
+	}
+	return rewriteEnterpriseCatalogFromCurrent(artifactsDir, enterprise)
+}
+
+func rewriteEnterpriseCatalogFromCurrent(artifactsDir, enterprise string) error {
+	spec, err := registrySpec(artifactsDir, enterprise)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	generation := 0
+	ttl := maxCredentialTTL
+	raw, err := os.ReadFile(filepath.Join(artifactsDir, "registries", enterprise, "catalog.vc.json"))
+	if err == nil {
+		if current, decodeErr := decodeCredentialMap(raw); decodeErr == nil {
+			if subject, ok := current["credentialSubject"].(map[string]any); ok {
+				if parsed, ok := intValue(subject["credentialVersion"]); ok {
+					generation = parsed
+				}
+			}
+			if expirationRaw, ok := current["expirationDate"].(string); ok {
+				if expiration, parseErr := time.Parse(time.RFC3339, expirationRaw); parseErr == nil && expiration.After(now.Add(2*time.Second)) {
+					ttl = expiration.Sub(now)
+				}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	signingKey, err := loadActiveSigningKey(artifactsDir)
+	if err != nil {
+		return err
+	}
+	return writeEnterpriseCatalogCredential(artifactsDir, *spec, generation, ttl, now, signingKey)
+}
+
+func managedRegistryCredentialLoop(artifactsDir string, spec EnterpriseSpec, audit Auditor) {
+	generation := nextManagedRegistryGeneration(artifactsDir, spec.Key)
+	ticker := time.NewTicker(dynamicRegistryRotateInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := rotateManagedRegistryCredentials(artifactsDir, spec, generation, audit); err != nil {
+			audit.Log("trust-bundle", "managed_registry_rotation_failed", err.Error())
+			continue
+		}
+		generation++
+	}
+}
+
+func rotateManagedRegistryCredentials(artifactsDir string, spec EnterpriseSpec, generation int, audit Auditor) error {
+	now := time.Now().UTC().Truncate(time.Second)
+	signingKey, err := loadActiveSigningKey(artifactsDir)
+	if err != nil {
+		return err
+	}
+	if err := writeRegistryAddrCredential(artifactsDir, spec, generation, dynamicRegistryAddrTTL, now, signingKey); err != nil {
+		return err
+	}
+	if err := writeEnterpriseCatalogCredential(artifactsDir, spec, generation, dynamicRegistryCatalogTTL, now, signingKey); err != nil {
+		return err
+	}
+	audit.Log("nanda-index", "managed_registry_credentials_rotated", fmt.Sprintf("generation=%d addrTTL=%s catalogTTL=%s", generation, dynamicRegistryAddrTTL, dynamicRegistryCatalogTTL))
+	return nil
+}
+
+func nextManagedRegistryGeneration(artifactsDir, enterprise string) int {
+	maxGeneration := credentialGeneration(filepath.Join(artifactsDir, "registries", enterprise, "addr.vc.json"))
+	if catalogGeneration := credentialGeneration(filepath.Join(artifactsDir, "registries", enterprise, "catalog.vc.json")); catalogGeneration > maxGeneration {
+		maxGeneration = catalogGeneration
+	}
+	return maxGeneration + 1
+}
+
+func credentialGeneration(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	credential, err := decodeCredentialMap(raw)
+	if err != nil {
+		return 0
+	}
+	subject, ok := credential["credentialSubject"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	generation, ok := intValue(subject["credentialVersion"])
+	if !ok {
+		return 0
+	}
+	return generation
+}
+
+func writeRegistryAddrCredential(artifactsDir string, enterprise EnterpriseSpec, generation int, ttl time.Duration, now time.Time, signingKey SigningKey) error {
+	addr := baseCredential("urn:nanda:registry-addr:"+enterprise.Key, "EnterpriseRegistryAddrCredential", now, now.Add(ttl), map[string]any{
+		"id":                "registry:" + enterprise.Key,
+		"registryID":        enterprise.RegistryID,
+		"name":              enterprise.Name,
+		"registrationType":  "enterprise-mcp-registry",
+		"catalogURL":        enterprise.CatalogURL,
+		"privateFactsURL":   enterprise.PrivateFactsURL,
+		"factsMode":         enterprise.FactsMode,
+		"description":       enterprise.Description,
+		"credentialVersion": generation,
+		"ttlSeconds":        int(ttl / time.Second),
+	})
+	addCredentialStatus(addr, statusListIndex(generation, enterprise.Key, "registry-addr"))
+	if err := sign(addr, signingKey, now); err != nil {
+		return err
+	}
+	return writeJSONAtomic(filepath.Join(artifactsDir, "registries", enterprise.Key, "addr.vc.json"), addr)
+}
+
+func writeEnterpriseCatalogCredential(artifactsDir string, enterprise EnterpriseSpec, generation int, ttl time.Duration, now time.Time, signingKey SigningKey) error {
+	agents, err := catalogAgents(artifactsDir, enterprise.Key)
+	if err != nil {
+		return err
+	}
+	catalog := baseCredential("urn:nanda:enterprise-catalog:"+enterprise.Key, "EnterpriseMCPCatalogCredential", now, now.Add(ttl), map[string]any{
+		"id":                "catalog:" + enterprise.Key,
+		"registryID":        enterprise.RegistryID,
+		"name":              enterprise.Name,
+		"description":       enterprise.Description,
+		"crdtUpdateURL":     enterprise.CRDTUpdateURL,
+		"agents":            agentCredentialEntries(agents),
+		"credentialVersion": generation,
+		"ttlSeconds":        int(ttl / time.Second),
+	})
+	addCredentialStatus(catalog, statusListIndex(generation, enterprise.Key, "catalog"))
+	if err := sign(catalog, signingKey, now); err != nil {
+		return err
+	}
+	return writeJSONAtomic(filepath.Join(artifactsDir, "registries", enterprise.Key, "catalog.vc.json"), catalog)
+}
+
+func agentCredentialEntries(agents []AgentSpec) []any {
+	entries := make([]any, 0, len(agents))
+	for _, agent := range agents {
+		entries = append(entries, map[string]any{
+			"id":       agent.ID,
+			"name":     agent.Name,
+			"endpoint": agent.Endpoint,
+			"tools":    agent.Tools,
+		})
+	}
+	return entries
+}
+
+func normalizeAgentSpec(agent AgentSpec) AgentSpec {
+	agent.ID = strings.TrimSpace(agent.ID)
+	agent.Name = strings.TrimSpace(agent.Name)
+	agent.Endpoint = strings.TrimRight(strings.TrimSpace(agent.Endpoint), "/")
+	tools := []string{}
+	seen := map[string]bool{}
+	for _, tool := range agent.Tools {
+		tool = strings.TrimSpace(tool)
+		if tool == "" || seen[tool] {
+			continue
+		}
+		seen[tool] = true
+		tools = append(tools, tool)
+	}
+	sort.Strings(tools)
+	agent.Tools = tools
+	return agent
+}
+
+func validateAgentSpec(agent AgentSpec) error {
+	if agent.ID == "" {
+		return errors.New("agent id is required")
+	}
+	if agent.Name == "" {
+		return errors.New("agent name is required")
+	}
+	if agent.Endpoint == "" {
+		return errors.New("agent endpoint is required")
+	}
+	if err := validateAbsoluteHTTPURL(agent.Endpoint, "agent endpoint"); err != nil {
+		return err
+	}
+	if len(agent.Tools) == 0 {
+		return errors.New("agent must advertise at least one tool")
+	}
+	return nil
+}
+
+func validateAbsoluteHTTPURL(value, label string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute URL", label)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%s must use http or https", label)
+	}
+	return nil
+}
+
+func firstTool(agent AgentSpec) string {
+	if len(agent.Tools) == 0 {
+		return ""
+	}
+	return agent.Tools[0]
 }
 
 func enterpriseSpec(key string) *EnterpriseSpec {
@@ -1581,7 +2170,9 @@ func statusListIndex(generation int, enterpriseKey, credentialKind string) int {
 	case "enterprise-b:crdt-updates":
 		offset = 6
 	default:
-		offset = 9
+		hash := sha256.Sum256([]byte(enterpriseKey + ":" + credentialKind))
+		base := 1000 + int(hash[0])<<8 + int(hash[1])
+		return (base + generation*10) % statusListSizeBits
 	}
 	return generation*10 + offset
 }

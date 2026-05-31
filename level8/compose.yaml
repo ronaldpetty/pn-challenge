@@ -184,7 +184,7 @@ services:
     ports:
       - "18081:8080"
     volumes:
-      - ./artifacts:/artifacts:ro
+      - ./artifacts:/artifacts
       - ./logs:/logs
       - ./bin:/shared-bin:ro
     networks:
@@ -208,7 +208,7 @@ services:
     ports:
       - "18082:8080"
     volumes:
-      - ./artifacts:/artifacts:ro
+      - ./artifacts:/artifacts
       - ./logs:/logs
       - ./bin:/shared-bin:ro
     networks:
@@ -328,6 +328,8 @@ services:
       - ./artifacts:/artifacts:ro
       - ./logs:/logs
       - ./bin:/shared-bin:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - nanda_net
       - privacy_net

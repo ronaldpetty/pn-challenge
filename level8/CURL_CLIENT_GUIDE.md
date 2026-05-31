@@ -1,6 +1,17 @@
 # cURL Dynamic Client Guide
 
-This guide fakes a dynamic client agent with plain `curl`. Start the stack first:
+This guide fakes a dynamic client agent with plain `curl`. In this role, you are a **user of NANDA**:
+
+- you start with one known NANDA index
+- you discover federated indexes
+- you search for registries and agents that are already advertised
+- you resolve signed registry address credentials
+- you fetch signed AgentFacts-like catalogs
+- you call a discovered MCP tool endpoint
+
+This guide does **not** make your client searchable in the NANDA index. It does not register a new agent, create a new registry, or publish new AgentFacts. Those producer-side flows are covered in `LEVEL8_WALKTHROUGH.md`, especially the sections that register a Python agent with Enterprise A and create a dynamic registry.
+
+Start the stack first:
 
 ```sh
 docker compose up --build

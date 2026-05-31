@@ -28,9 +28,9 @@ docker compose down --remove-orphans
 
 ## Main Files
 
+- `LEVEL8_WALKTHROUGH.md`: single interactive guide for compose startup, Python agents, dynamic registries, registration, discovery, and tool calls.
 - `LEVEL8_RUNBOOK.md`: operational runbook.
 - `CURL_CLIENT_GUIDE.md`: manual cURL flow that mimics a dynamic client agent.
-- `PYTHON_AGENT_GUIDE.md`: how to build a new Python MCP-style agent for this demo.
 - `features.md`: feature coverage against `2507.14263v1.pdf`.
 
 ## Services
