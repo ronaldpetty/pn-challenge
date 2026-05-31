@@ -70,6 +70,31 @@ rm -rf artifacts
 ./scripts/test-e2e.sh
 ```
 
+## Verification Choice
+
+The challenge says: **"On verification: signed JSON, W3C Verifiable Credentials, or another approach of your choice"**.
+
+This demo uses **signed JSON with W3C Verifiable Credential fields**:
+
+- `AgentAddr` and `AgentFacts` are JSON documents.
+- Each document has VC-style fields: `@context`, `type`, `issuer`, `issuanceDate`, `expirationDate`, `credentialSubject`, and `proof`.
+- The `proof` contains an Ed25519 signature.
+- The signature is computed over deterministic canonical JSON.
+- The client verifies the signature with the trusted issuer public key in `artifacts/trust/issuers.json`.
+- The e2e test mutates fetched `AgentFacts` in memory and proves the signature check fails.
+
+In simple terms: the documents look like W3C Verifiable Credentials, but the implemented verification technique is the challenge's **signed JSON** option.
+
+### Why Not Claim Full W3C Verifiable Credentials?
+
+A standards-complete W3C VC implementation is more than adding VC-shaped fields to JSON. It normally requires choosing and implementing an interoperable proof format, such as a Data Integrity proof suite or JWT-secured VC, plus the related canonicalization, JSON-LD context handling, key resolution, and verification rules.
+
+For Level 1, the requirement is that the client can detect tampering and act only after verification. Local signed JSON with Ed25519 does that clearly without adding remote JSON-LD context loading, DID resolution, or a larger VC dependency stack. A future Level 2 path could replace the local proof format with a standards-complete VC library while keeping the same `AgentAddr` and `AgentFacts` flow.
+
+### Index, Agents, and Verification Relationship
+
+The index does not prove that an agent is safe to use by itself; it returns a signed `AgentAddr` that tells the client where the agent's metadata and runtime endpoint are. The agent then serves its own signed `AgentFacts`, which describes the agent and its capabilities. The client is the verifier in both steps: it verifies the `AgentAddr` from the index, uses the verified `factsURL` to fetch `AgentFacts`, verifies those facts, and only then calls the verified `invokeURL`. In this demo, both `AgentAddr` and `AgentFacts` are signed by the local NANDA demo issuer, and the client trusts that issuer through `artifacts/trust/issuers.json`.
+
 ## Interactive Docker Compose Run
 
 This is still a Docker-based run. The difference from `./scripts/test-e2e.sh` is that you start the services yourself and use curl interactively instead of letting the e2e test container drive the whole flow.
@@ -86,24 +111,29 @@ docker compose up --build index agent-alpha agent-beta
 Use curl from another terminal:
 
 ```sh
+# Proves the index is reachable by a DNS-like name and lists registered agents.
 curl --noproxy '*' --cacert artifacts/tls/ca/ca.crt \
   --resolve index.nanda.local:8443:127.0.0.1 \
   https://index.nanda.local:8443/agents
 
+# Proves name resolution returns a signed AgentAddr for alpha.nanda.local.
 curl --noproxy '*' --cacert artifacts/tls/ca/ca.crt \
   --resolve index.nanda.local:8443:127.0.0.1 \
   https://index.nanda.local:8443/resolve/alpha.nanda.local
 
+# Proves the alpha AgentAddr points to retrievable signed AgentFacts.
 curl --noproxy '*' --cacert artifacts/tls/ca/ca.crt \
   --resolve alpha.nanda.local:9443:127.0.0.1 \
   https://alpha.nanda.local:9443/facts
 
+# Proves the verified alpha runtime endpoint can be invoked over HTTPS.
 curl --noproxy '*' --cacert artifacts/tls/ca/ca.crt \
   --resolve alpha.nanda.local:9443:127.0.0.1 \
   -H 'content-type: application/json' \
   -d '{"message":"hello alpha"}' \
   https://alpha.nanda.local:9443/invoke
 
+# Proves the second registered agent has its own DNS-like facts endpoint.
 curl --noproxy '*' --cacert artifacts/tls/ca/ca.crt \
   --resolve beta.nanda.local:10443:127.0.0.1 \
   https://beta.nanda.local:10443/facts
@@ -172,7 +202,7 @@ The client verifies both credentials before using them:
 4. Verify the `AgentFacts` signature.
 5. Only then call the agent's `invoke` endpoint.
 
-The credentials are W3C Verifiable Credential shaped JSON with Ed25519 proof metadata. The client uses the local trust bundle in:
+The credentials are signed JSON documents using W3C Verifiable Credential fields and Ed25519 proof metadata. The client uses the local trust bundle in:
 
 ```text
 artifacts/trust/issuers.json
