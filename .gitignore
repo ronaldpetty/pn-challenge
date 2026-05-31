@@ -2,4 +2,13 @@
 /bin/
 /.gocache/
 /.gomodcache/
+/level1/artifacts/
+/level1/bin/
+/level1/.gocache/
+/level1/.gomodcache/
+/level2/artifacts/
+/level2/bin/
+/level2/logs/
+/level2/.gocache/
+/level2/.gomodcache/
 /*.pdf

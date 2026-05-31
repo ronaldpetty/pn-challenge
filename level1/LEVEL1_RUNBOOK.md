@@ -157,6 +157,10 @@ index -> AgentAddr -> AgentFacts
 
 This repo implements that path as follows.
 
+### Registration Type Used In Level 1
+
+Level 1 uses **direct NANDA-native registration**. The NANDA index directly stores signed `AgentAddr` records for the two agents in `artifacts/index/agents.json`. There is no enterprise registry, DID resolver, or private facts gateway in this level; the client asks the index for an agent name and receives the signed address record directly.
+
 ### 1. Register at Least Two Agents
 
 The artifact generator creates two local agents:
