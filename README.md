@@ -120,3 +120,22 @@ Read:
 
 - `level7/README.md`
 - `level7/LEVEL7_RUNBOOK.md`
+
+## Level 8
+
+Level 8 lives in `level8/` and keeps Level 7's privacy, revocation, CRDT, and issuer key rotation behavior while adding a federated NANDA quilt. It runs two local indexes, lets enterprise registries dynamically join their home index, supports runtime registry creation, accepts runtime agent registration through registries, and lets clients search by registry, tool, or agent before resolving signed facts and calling MCP tools.
+
+Run it:
+
+```sh
+cd level8
+./scripts/test-e2e.sh
+```
+
+Read:
+
+- `level8/README.md`
+- `level8/LEVEL8_RUNBOOK.md`
+- `level8/LEVEL8_WALKTHROUGH.md`
+- `level8/CURL_CLIENT_GUIDE.md`
+- `level8/features.md`
