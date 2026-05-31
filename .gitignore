@@ -31,4 +31,9 @@
 /level6/logs/
 /level6/.gocache/
 /level6/.gomodcache/
+/level7/artifacts/
+/level7/bin/
+/level7/logs/
+/level7/.gocache/
+/level7/.gomodcache/
 /*.pdf

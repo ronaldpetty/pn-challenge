@@ -104,3 +104,19 @@ Read:
 
 - `level6/README.md`
 - `level6/LEVEL6_RUNBOOK.md`
+
+## Level 7
+
+Level 7 lives in `level7/` and keeps Level 6's privacy, revocation, and CRDT behavior while adding issuer signing-key rotation. A local key rotator prepublishes a new verification key, promotes it to active, keeps the previous key trusted during overlap, then retires it while services continue running.
+
+Run it:
+
+```sh
+cd level7
+./scripts/test-e2e.sh
+```
+
+Read:
+
+- `level7/README.md`
+- `level7/LEVEL7_RUNBOOK.md`
