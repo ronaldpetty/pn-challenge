@@ -1,133 +1,91 @@
-# Project NANDA Challenge Demos
+# NANDA Index — Technical Challenge Submission
 
-This repository contains separate local Docker Compose demos for the NANDA technical challenge.
+**Challenge:** Beyond DNS: Unlocking the Internet of AI Agents via the NANDA Index and Verified AgentFacts  
+**Paper:** arxiv.org/pdf/2507.14263
 
-## Level 1
+---
 
-Level 1 lives in `level1/` and demonstrates the required `index -> AgentAddr -> AgentFacts` flow for two directly registered agents.
-
-Run it:
-
-```sh
-cd level1
-./scripts/test-e2e.sh
-```
-
-Read:
-
-- `level1/README.md`
-
-## Level 2
-
-Level 2 lives in `level2/` and demonstrates enterprise-routed registration. NANDA registers two fake enterprise MCP registry proxies, and a consumer searches for those registries through NANDA, verifies their signed catalogs, compares live MCP tool lists to those catalogs, executes skills, and logs the flow.
-
-Run it:
-
-```sh
-cd level2
-./scripts/test-e2e.sh
-```
-
-Read:
-
-- `level2/README.md`
-
-## Level 3
-
-Level 3 lives in `level3/` and keeps the Level 2 enterprise registry shape, but adds short-lived signed JSON credentials. Registry address credentials and enterprise catalog credentials expire after a random 5-10 seconds, rotate after a deliberate expired gap, and the consumer plus swimlane keep running until Docker Compose is stopped.
-
-Run the bounded verification script:
-
-```sh
-cd level3
-./scripts/test-e2e.sh
-```
-
-Run the live demo:
-
-```sh
-cd level3
-docker compose up --build
-```
-
-Read:
-
-- `level3/README.md`
-
-## Level 4
-
-Level 4 lives in `level4/` and adds a local `PrivateFactsURL` demo. Enterprise A uses the original public direct catalog path, while Enterprise B uses a neutral `private-facts-gateway`; the consumer exercises both paths in the same run while still verifying signed, rotating credentials.
-
-Run it:
-
-```sh
-cd level4
-./scripts/test-e2e.sh
-```
-
-Read:
-
-- `level4/README.md`
-
-## Level 5
-
-Level 5 lives in `level5/` and keeps Level 4's public/private facts paths while adding explicit W3C-style VC status-list revocation. A local `revocation-authority` serves a signed status list, revokes an active Enterprise B catalog credential before TTL expiry, and the consumer rejects it until the next rotated credential recovers.
-
-Run it:
-
-```sh
-cd level5
-./scripts/test-e2e.sh
-```
-
-Read:
-
-- `level5/README.md`
-
-## Level 6
-
-Level 6 lives in `level6/` and keeps Level 5's privacy, rotation, and revocation behavior while adding a local CRDT-based AgentFacts update protocol. Catalogs point to a signed `crdt-update-bus`; the consumer verifies and merges update operations without rewriting the NANDA index.
-
-Run it:
-
-```sh
-cd level6
-./scripts/test-e2e.sh
-```
-
-Read:
-
-- `level6/README.md`
-
-## Level 7
-
-Level 7 lives in `level7/` and keeps Level 6's privacy, revocation, and CRDT behavior while adding issuer signing-key rotation. A local key rotator prepublishes a new verification key, promotes it to active, keeps the previous key trusted during overlap, then retires it while services continue running.
-
-Run it:
-
-```sh
-cd level7
-./scripts/test-e2e.sh
-```
-
-Read:
-
-- `level7/README.md`
-
-## Level 8
-
-Level 8 lives in `level8/` and keeps Level 7's privacy, revocation, CRDT, and issuer key rotation behavior while adding a federated NANDA quilt. It runs two local indexes, lets enterprise registries dynamically join their home index, supports runtime registry creation, accepts runtime agent registration through registries, and lets clients search by registry, tool, or agent before resolving signed facts and calling MCP tools.
-
-Run it:
+## Quick Start
 
 ```sh
 cd level8
 ./scripts/test-e2e.sh
 ```
 
-Read:
+For an interactive run with live logs:
 
-- `level8/README.md`
-- `level8/LEVEL8_WALKTHROUGH.md`
-- `level8/CURL_CLIENT_GUIDE.md`
-- `level8/features.md`
+```sh
+cd level8
+docker compose up --build
+```
+
+See `level8/LEVEL8_WALKTHROUGH.md` for a full walkthrough including registering a host Python agent, creating a dynamic runtime registry, and doing the discovery-to-tool-call flow manually with `curl`. See `level8/CURL_CLIENT_GUIDE.md` for a client-only `curl` flow.
+
+---
+
+## What Was Built
+
+The implementation is in `level8/`. It demonstrates the core NANDA resolution flow end-to-end:
+
+```
+AgentName → Index → AgentAddr → FactsURL/PrivateFactsURL → AgentFacts → Endpoint
+```
+
+On each consumer cycle (`internal/consumer/consumer.go`):
+
+1. Searches NANDA A, discovers NANDA B through `/peers`, searches both indexes.
+2. Resolves a signed `EnterpriseRegistryAddrCredential` (AgentAddr) from the advertising index.
+3. Verifies: Ed25519 signature → expiration → StatusList2021 revocation bit.
+4. Fetches the signed `EnterpriseMCPCatalogCredential` (AgentFacts) from either the public catalog URL or `privateFactsURL` through a neutral gateway.
+5. Verifies the same way, then fetches and verifies a signed CRDT update credential for dynamic metadata.
+6. Cross-checks live MCP `tools/list` against what the catalog declared.
+7. Calls a tool only after all checks pass.
+
+Tampering at any layer fails signature verification and the consumer skips that registry.
+
+### Level 1 — Required
+
+- Two federated NANDA indexes (`nanda-a`, `nanda-b`) with peer discovery.
+- Four built-in MCP tool agents plus dynamic runtime registration.
+- Full `index → AgentAddr → AgentFacts` path in code.
+- Ed25519-signed W3C-style VCs with canonical JSON; client detects tampering.
+
+### Level 2 — Bonus
+
+- **Different registration types:** static enterprise registries that join an index on startup; runtime registries created from flags with no code change; ad-hoc agent registration via `POST /agents/register`.
+- **Visualization:** `swimlane` service tails all JSONL audit logs and prints a live activity stream; rotation events, revocations, key lifecycle, and verification failures are highlighted.
+- **Test harness:** `scripts/test-e2e.sh` asserts federation, revocation/recovery, privacy path, CRDT merge, key rotation lifecycle, dynamic registration, and tool execution.
+- **CLI client guide:** `CURL_CLIENT_GUIDE.md` walks the full discovery flow with plain `curl`.
+
+### Additional Features
+
+- **PrivateFactsURL:** Enterprise B's facts are served through a neutral `private-facts-gateway`; the consumer never contacts the source registry directly.
+- **StatusList2021 revocation:** a `revocation-authority` revokes an active catalog credential mid-lifetime; the consumer rejects it and recovers after rotation.
+- **CRDT-based AgentFacts updates:** a `crdt-update-bus` publishes signed update credentials with LWW-register and OR-set operations outside the index path.
+- **Issuer key rotation:** a `issuer-key-rotator` prepublishes a new Ed25519 key, promotes it, keeps the previous key trusted during overlap, then retires it; the consumer reloads the trust bundle each cycle and verifies by `proof.verificationMethod`.
+- **Tool and agent search:** NANDA `/search` filters by `registrationType`, `tool`, or `agent` and returns matching registry and agent endpoint metadata.
+
+---
+
+## What Was Set Aside
+
+- **AdaptiveResolverURL** — the paper's programmable routing layer (geo-dispatch, load balancing, signed ephemeral tokens). The index and facts layers are fully modeled; this routing tier is not.
+- **Full JSON-LD and W3C VC v2 compliance** — VCs are structurally correct but not validated against a JSON-LD processor; the v1 context URL is used.
+- **DID resolution** — issuer IDs are `did:web:` strings used as identifiers; no DID document resolution over HTTP.
+- **SBOM hashes, certifications, third-party audit claims** — capabilities and tools are modeled but not the full AgentFacts audit/certification schema.
+- **Real decentralized hosting** — the privacy path uses a local Docker gateway; no IPFS, CDN, or Tor relay.
+- **Internet-scale sharding and edge caching** — two local indexes demonstrate the quilt concept; no replication or consensus protocol.
+
+Full feature coverage against the paper is in `level8/features.md`.
+
+---
+
+## How The Work Progressed
+
+The build went through eight iterations, each closing one paper concept at a time. See `level_overview.md` for the full level-by-level summary.
+
+---
+
+## AI Tools
+
+Claude Code (Anthropic) was used throughout — for code generation, architecture decisions, and iterative review. Each level was reviewed against the paper, gaps were identified, and the next level was built to close one gap. The reviews drove the feature roadmap rather than up-front planning. This README was also written with Claude Code.
