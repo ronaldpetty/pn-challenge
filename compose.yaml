@@ -1,0 +1,120 @@
+x-demo-image: &demo-image
+  image: pn-challenge-local
+  build: .
+
+services:
+  go-build:
+    <<: *demo-image
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mkdir -p /shared-bin /tmp/gocache /tmp/gomodcache &&
+        GOCACHE=/tmp/gocache
+        GOMODCACHE=/tmp/gomodcache
+        CGO_ENABLED=0
+        go build -o /shared-bin/pn-demo ./cmd/pn-demo &&
+        chmod +x /shared-bin/pn-demo
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+      - ./bin:/shared-bin
+
+  artifact-init:
+    <<: *demo-image
+    entrypoint: ["/bin/sh", "/usr/local/bin/init_artifacts.sh"]
+    depends_on:
+      go-build:
+        condition: service_completed_successfully
+    volumes:
+      - ./artifacts:/artifacts
+      - ./bin:/shared-bin:ro
+
+  index:
+    <<: *demo-image
+    command: ["index", "--artifacts", "/artifacts", "--addr", ":8443"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./bin:/shared-bin:ro
+    networks:
+      - nanda_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/pn-demo", "health", "--url", "https://localhost:8443/healthz", "--ca", "/artifacts/tls/ca/ca.crt"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  agent-alpha:
+    <<: *demo-image
+    command: ["agent", "--artifacts", "/artifacts", "--name", "alpha", "--service-name", "agent-alpha", "--addr", ":8443"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "9443:8443"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./bin:/shared-bin:ro
+    networks:
+      - agent_alpha_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/pn-demo", "health", "--url", "https://localhost:8443/healthz", "--ca", "/artifacts/tls/ca/ca.crt"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  agent-beta:
+    <<: *demo-image
+    command: ["agent", "--artifacts", "/artifacts", "--name", "beta", "--service-name", "agent-beta", "--addr", ":8443"]
+    depends_on:
+      artifact-init:
+        condition: service_completed_successfully
+    ports:
+      - "10443:8443"
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./bin:/shared-bin:ro
+    networks:
+      - agent_beta_net
+    healthcheck:
+      test: ["CMD", "/shared-bin/pn-demo", "health", "--url", "https://localhost:8443/healthz", "--ca", "/artifacts/tls/ca/ca.crt"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  e2e-test:
+    <<: *demo-image
+    profiles: ["test"]
+    command:
+      - "client"
+      - "--artifacts"
+      - "/artifacts"
+      - "--index"
+      - "https://index:8443"
+      - "--agents"
+      - "alpha.nanda.local,beta.nanda.local"
+      - "--invoke=true"
+      - "--tamper-check=true"
+    depends_on:
+      index:
+        condition: service_healthy
+      agent-alpha:
+        condition: service_healthy
+      agent-beta:
+        condition: service_healthy
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - ./bin:/shared-bin:ro
+    networks:
+      - nanda_net
+      - agent_alpha_net
+      - agent_beta_net
+
+networks:
+  nanda_net:
+  agent_alpha_net:
+  agent_beta_net:

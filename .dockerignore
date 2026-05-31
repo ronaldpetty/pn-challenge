@@ -1,0 +1,4 @@
+*
+!bin/pn-demo
+!scripts/
+!scripts/init_artifacts.sh
