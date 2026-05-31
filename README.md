@@ -88,3 +88,19 @@ Read:
 
 - `level5/README.md`
 - `level5/LEVEL5_RUNBOOK.md`
+
+## Level 6
+
+Level 6 lives in `level6/` and keeps Level 5's privacy, rotation, and revocation behavior while adding a local CRDT-based AgentFacts update protocol. Catalogs point to a signed `crdt-update-bus`; the consumer verifies and merges update operations without rewriting the NANDA index.
+
+Run it:
+
+```sh
+cd level6
+./scripts/test-e2e.sh
+```
+
+Read:
+
+- `level6/README.md`
+- `level6/LEVEL6_RUNBOOK.md`
